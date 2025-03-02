@@ -4,10 +4,11 @@ import './App.css';
 import AOS from 'aos';
 import 'aos/dist/aos.css';
 
-// Define the backend base URL
-const BACKEND_URL = 'https://fashion-muzm.onrender.com';
+// Define the backend base URL - Updated to match your deployed backend
+const BACKEND_URL = 'https://fashion-ai-backend-d39e.onrender.com';
 
 const App = () => {
+  // Rest of your component remains the same
   useEffect(() => {
     AOS.init({
       duration: 800,
@@ -20,7 +21,6 @@ const App = () => {
   const [recommendations, setRecommendations] = useState('');
   const [remixingSuggestions, setRemixingSuggestions] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  // Add error state
   const [error, setError] = useState('');
 
   // Check if the backend is up using the root endpoint
@@ -37,6 +37,7 @@ const App = () => {
     checkBackendStatus();
   }, []);
 
+  // Rest of your code remains unchanged
   const handleUpload = async () => {
     if (!file) {
       alert('Please upload a file first!');

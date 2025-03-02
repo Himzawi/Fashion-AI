@@ -22,7 +22,7 @@ if not weather_api_key:
 app = Flask(__name__)
 
 # Configure CORS - PROPERLY specifying origins
-CORS(app, resources={r"/*": {"origins": ["https://ai-fashion-advisor.web.app", "http://localhost:3000"], 
+CORS(app, resources={r"/*": {"origins": ["https://fashion-ai-frontend.onrender.com", "https://ai-fashion-advisor.web.app", "http://localhost:3000"], 
                              "methods": ["GET", "POST", "OPTIONS"], 
                              "allow_headers": ["Content-Type"]}})
 
