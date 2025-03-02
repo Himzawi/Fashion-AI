@@ -1,11 +1,13 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from transformers import CLIPProcessor, CLIPModel
+import torch
 from PIL import Image
 import requests
 from dotenv import load_dotenv
 import os
 import traceback
+import gc
 
 # Load environment variables
 load_dotenv("Api.env")
@@ -21,18 +23,25 @@ if not weather_api_key:
 
 app = Flask(__name__)
 
-# Configure CORS - PROPERLY specifying origins
-CORS(app, resources={r"/*": {"origins": ["https://fashion-ai-frontend.onrender.com", "https://ai-fashion-advisor.web.app", "http://localhost:3000"], 
-                             "methods": ["GET", "POST", "OPTIONS"], 
-                             "allow_headers": ["Content-Type"]}})
+# Simpler CORS configuration with all headers allowed
+CORS(app, origins=["https://fashion-ai-frontend.onrender.com", "https://ai-fashion-advisor.web.app", "http://localhost:3000"],
+     methods=["GET", "POST", "OPTIONS"],
+     allow_headers=["Content-Type", "Authorization"])
 
-# Load CLIP model and processor
-try:
-    model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-    processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-except Exception as e:
-    print(f"Error loading CLIP model: {e}")
-    raise
+# Load CLIP model with memory optimization
+model = None
+processor = None
+
+def load_model():
+    global model, processor
+    try:
+        # Use half-precision to reduce memory footprint
+        model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32", torch_dtype=torch.float16)
+        processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+        print("CLIP model loaded successfully")
+    except Exception as e:
+        print(f"Error loading CLIP model: {e}")
+        raise
 
 # Ensure 'uploads' directory exists
 os.makedirs('uploads', exist_ok=True)
@@ -42,6 +51,10 @@ os.makedirs('uploads', exist_ok=True)
 def index():
     return jsonify({"status": "AI Fashion Advisor API is running"}), 200
 
+# Add a CORS test endpoint
+@app.route('/cors-test', methods=['GET', 'OPTIONS'])
+def cors_test():
+    return jsonify({"status": "CORS is working correctly"}), 200
 
 @app.route('/weather', methods=['GET'])
 def get_weather():
@@ -68,8 +81,12 @@ def get_weather():
         return jsonify({'error': error_message}), 500
 
 
-@app.route('/upload', methods=['POST'])
+@app.route('/upload', methods=['POST', 'OPTIONS'])
 def upload():
+    # Handle preflight OPTIONS request
+    if request.method == 'OPTIONS':
+        return '', 204
+        
     try:
         print("Received upload request")
 
@@ -105,6 +122,11 @@ def upload():
         file.save(image_path)
         print(f"File saved to: {image_path}")
 
+        # Load model on-demand to save memory
+        global model, processor
+        if model is None or processor is None:
+            load_model()
+
         # Analyze the outfit
         feedback, outfit_description = analyze_outfit(image_path)
         print(f"Feedback: {feedback}")
@@ -124,6 +146,10 @@ def upload():
             weather_recommendations = get_weather_recommendations(weather_data, feedback)
             print(f"Weather recommendations: {weather_recommendations}")
 
+        # Free up memory after processing
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        gc.collect()
+
         return jsonify({
             'feedback': feedback,
             'recommendations': recommendations,
@@ -135,6 +161,11 @@ def upload():
         error_message = f"Error in /upload: {str(e)}"
         print(error_message)
         traceback.print_exc()
+        
+        # Free up memory on error
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        gc.collect()
+        
         return jsonify({'error': error_message}), 500
 
 
@@ -186,17 +217,28 @@ def analyze_outfit(image_path):
                           "sweater"]
         styles = ["casual", "formal", "sporty", "elegant", "bohemian", "streetwear"]
 
+        # Process in smaller batches to save memory
         inputs_items = processor(text=clothing_items, images=image, return_tensors="pt", padding=True)
-        outputs_items = model(**inputs_items)
+        with torch.no_grad():  # Disable gradient tracking to save memory
+            outputs_items = model(**inputs_items)
         logits_per_image_items = outputs_items.logits_per_image
         probs_items = logits_per_image_items.softmax(dim=1).tolist()[0]
         top_items = sorted(zip(clothing_items, probs_items), key=lambda x: x[1], reverse=True)[:3]
 
+        # Free memory between operations
+        del inputs_items, outputs_items, logits_per_image_items
+        gc.collect()
+
         inputs_styles = processor(text=styles, images=image, return_tensors="pt", padding=True)
-        outputs_styles = model(**inputs_styles)
+        with torch.no_grad():  # Disable gradient tracking to save memory
+            outputs_styles = model(**inputs_styles)
         logits_per_image_styles = outputs_styles.logits_per_image
         probs_styles = logits_per_image_styles.softmax(dim=1).tolist()[0]
         top_styles = sorted(zip(styles, probs_styles), key=lambda x: x[1], reverse=True)[:3]
+
+        # Free memory
+        del inputs_styles, outputs_styles, logits_per_image_styles
+        gc.collect()
 
         feedback = f"This outfit is {top_styles[0][0]}! It also works well for {top_styles[1][0]} and {top_styles[2][0]}."
         outfit_description = f"The outfit includes a {top_items[0][0]}, {top_items[1][0]}, and {top_items[2][0]}."
@@ -301,5 +343,6 @@ def generate_remixing_suggestions(outfit_description):
 
 
 if __name__ == '__main__':
-    # For development only - remove debug=True for production
-    app.run(host='0.0.0.0', port=8080)
+    # Use the PORT environment variable provided by Render
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
